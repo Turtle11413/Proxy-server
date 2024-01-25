@@ -10,9 +10,9 @@
 #define kMaxConnections 100
 
 class ProxyServer {
- public:
-  ProxyServer(const std::string& listen_port, const std::string& server_host,
-              const std::string& server_port);
+public:
+  ProxyServer(const std::string &listen_port, const std::string &server_host,
+              const std::string &server_port);
 
   ~ProxyServer() {
     close(listen_socket_);
@@ -21,20 +21,20 @@ class ProxyServer {
 
   void Run();
 
- private:
-  void InitListenSocket();
-  void BindListenSocket();
+private:
+  void InitSocket(int &socket_);
+  void BindSocket(int &socket_, const int &port);
+  void ListenSocket(int &socket_);
+  void CreateListenSocket();
 
-  void InitServerSocket();
-  void BindServerSocket();
+  void ConnectSocket(int &socket_, const std::string &host, const int &port);
+  void CreateServerSocket();
 
   void ReadConsoleInput();
 
-  void HandleClient(std::ofstream& log_stream);
-  void HandleClientLogic(int client_socket, std::ofstream& log_stream);
-
-  void InitClientSocket();
-  void ConnectClientSocket();
+  void CreateClientSocket(int &client_socket);
+  void HandleClient(std::ofstream &log_stream);
+  void ConnectClientWithServer(int &client_socket);
 
   std::thread console_input_thread_;
 
@@ -49,4 +49,4 @@ class ProxyServer {
   ServerStatus server_status_ = ServerStatus::STOP;
 };
 
-#endif  // PROXY_SEREVER_PROXY_H_
+#endif // PROXY_SEREVER_PROXY_H_

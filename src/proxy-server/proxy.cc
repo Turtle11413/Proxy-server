@@ -11,76 +11,85 @@
 #include <iostream>
 #include <string>
 
-ProxyServer::ProxyServer(const std::string& listen_port,
-                         const std::string& server_host,
-                         const std::string& server_port) {
+ProxyServer::ProxyServer(const std::string &listen_port,
+                         const std::string &server_host,
+                         const std::string &server_port) {
   listen_port_ = std::stoi(listen_port);
   server_host_ = server_host;
   server_port_ = std::stoi(server_port);
 
-  InitListenSocket();
-  InitServerSocket();
+  CreateListenSocket();
+  CreateServerSocket();
 }
 
-void ProxyServer::InitListenSocket() {
+void ProxyServer::InitSocket(int &socket_) {
   // AF_INET for IPv4, SOCK_STREAM for TCP
-  if ((listen_socket_ = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-    throw std::runtime_error("listen socket creating error");
+  if ((socket_ = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    throw std::runtime_error("Socket creating error");
   }
-
-  BindListenSocket();
 }
 
-void ProxyServer::BindListenSocket() {
-  struct sockaddr_in listen_addr;
+void ProxyServer::BindSocket(int &socket_, const int &port) {
+  struct sockaddr_in sock_addr;
 
-  listen_addr.sin_family = AF_INET;
-  listen_addr.sin_addr.s_addr = INADDR_ANY;
-  listen_addr.sin_port = htons(listen_port_);
+  sock_addr.sin_family = AF_INET;
+  sock_addr.sin_addr.s_addr = INADDR_ANY;
+  sock_addr.sin_port = htons(port);
 
-  if (bind(listen_socket_, reinterpret_cast<sockaddr*>(&listen_addr),
-           sizeof(listen_addr)) < 0) {
-    close(listen_socket_);
-    throw std::runtime_error("Error binding listen socket");
+  if (bind(socket_, reinterpret_cast<sockaddr *>(&sock_addr),
+           sizeof(sock_addr)) < 0) {
+    close(socket_);
+    throw std::runtime_error("Bind socket error");
   }
-
-  if (listen(listen_socket_, kMaxConnections) < 0) {
-    throw std::runtime_error("Error listening on listen socket");
-    close(listen_socket_);
-  }
-
-  std::cout << "Proxy server started on port " << listen_port_ << std::endl;
 }
 
-void ProxyServer::InitServerSocket() {
-  if ((server_socket_ = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-    close(listen_socket_);
-    throw std::runtime_error("server socket creating error");
+void ProxyServer::ListenSocket(int &socket_) {
+  if (listen(socket_, kMaxConnections) < 0) {
+    throw std::runtime_error("Error listen socket");
+    close(socket_);
   }
-
-  BindServerSocket();
 }
 
-void ProxyServer::BindServerSocket() {
-  struct sockaddr_in server_addr;
+void ProxyServer::CreateListenSocket() {
+  try {
+    InitSocket(listen_socket_);
+    BindSocket(listen_socket_, listen_port_);
+    ListenSocket(listen_socket_);
+    std::cout << "Proxy server started on port " << listen_port_ << std::endl;
+  } catch (std::exception &e) {
+    close(listen_socket_);
+    std::cout << "Exception throwed: " << e.what() << std::endl;
+  }
+}
 
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_addr.s_addr = inet_addr(server_host_.c_str());
-  server_addr.sin_port = htons(server_port_);
+void ProxyServer::ConnectSocket(int &socket_, const std::string &host,
+                                const int &port) {
+  struct sockaddr_in sock_addr;
 
-  std::cout << "Connecting to server: " << server_host_ << ":" << server_port_
-            << std::endl;
+  sock_addr.sin_family = AF_INET;
+  sock_addr.sin_addr.s_addr = inet_addr(host.c_str());
+  sock_addr.sin_port = htons(port);
 
-  if (connect(server_socket_, reinterpret_cast<sockaddr*>(&server_addr),
-              sizeof(server_addr)) < 0) {
+  if (connect(socket_, reinterpret_cast<sockaddr *>(&sock_addr),
+              sizeof(sock_addr)) < 0) {
     std::cerr << "Error code: " << errno << std::endl;
     std::cerr << "Error message: " << strerror(errno) << std::endl;
 
+    throw std::runtime_error("Connecting error: server socket\n");
+  }
+}
+
+void ProxyServer::CreateServerSocket() {
+  try {
+    InitSocket(server_socket_);
+    std::cout << "Connecting to server: " << server_host_ << ":" << server_port_
+              << std::endl;
+    ConnectSocket(server_socket_, server_host_, server_port_);
+    std::cout << "Successfull\n";
+  } catch (std::exception &e) {
     close(listen_socket_);
     close(server_socket_);
-    throw std::runtime_error("Connecting error: server socket\n");
-  } else {
-    std::cout << "Successfull\n";
+    std::cout << "Exception throwed : " << e.what() << std::endl;
   }
 }
 
@@ -112,61 +121,58 @@ void ProxyServer::Run() {
   console_input_thread_.join();
 }
 
-void ProxyServer::HandleClient([[maybe_unused]] std::ofstream& log_stream) {
+void ProxyServer::CreateClientSocket(int &client_socket) {
+
   sockaddr_in client_addr;
   socklen_t client_addr_size = sizeof(client_addr);
-  int client_socket =
-      accept(listen_socket_, reinterpret_cast<sockaddr*>(&client_addr),
+  client_socket =
+      accept(listen_socket_, reinterpret_cast<sockaddr *>(&client_addr),
              &client_addr_size);
 
   if (client_socket < 0) {
     throw std::runtime_error("Accepting client error");
-    return;
   }
 
   std::cout << "Accepted connection from " << inet_ntoa(client_addr.sin_addr)
             << ":" << ntohs(client_addr.sin_port) << std::endl;
+}
+
+void ProxyServer::HandleClient([[maybe_unused]] std::ofstream &log_stream) {
+  int client_socket = 0;
+
+  try {
+    CreateClientSocket(client_socket);
+  } catch (std::exception &e) {
+    std::cout << "Exception throwed: " << e.what() << std::endl;
+  }
 
   if (fork() == 0) {
     close(listen_socket_);
 
-    HandleClientLogic(client_socket, log_stream);
+    ConnectClientWithServer(client_socket);
 
     std::cout << "Connecting closed\n";
     exit(0);
   }
 }
 
-void ProxyServer::HandleClientLogic(
-    int client_socket, [[maybe_unused]] std::ofstream& log_stream) {
-  char buffer[100];
-  memset(buffer, 0, sizeof(buffer));
+void ProxyServer::ConnectClientWithServer(int &client_socket) {
+  int server_socket = 0;
+  try {
+    InitSocket(server_socket);
 
-  int backend_socket = socket(AF_INET, SOCK_STREAM, 0);
-  if (backend_socket < -1) {
+    std::cout << "Connecting to server: " << server_host_ << ":" << server_port_
+              << std::endl;
+    ConnectSocket(server_socket, server_host_, server_port_);
+    std::cout << "Successfull\n";
+
+    close(server_socket);
+    std::cout << "Disconnect to server\n";
+  } catch (std::exception &e) {
     close(client_socket);
-    throw std::runtime_error("Error creating backend socket");
-  }
-
-  sockaddr_in backend_addr{};
-  backend_addr.sin_family = AF_INET;
-  backend_addr.sin_addr.s_addr = inet_addr(server_host_.c_str());
-  backend_addr.sin_port = htons(server_port_);
-
-  std::cout << "Connecting to backend: " << server_host_ << ":" << server_port_
-            << std::endl;
-
-  if (connect(server_socket_, reinterpret_cast<sockaddr*>(&backend_addr),
-              sizeof(backend_addr)) < 0) {
+    close(server_socket);
     std::cerr << "Error code: " << errno << std::endl;
     std::cerr << "Error message: " << strerror(errno) << std::endl;
-    close(client_socket);
-    close(server_socket_);
-    throw std::runtime_error("Error connecting to backend");
-  } else {
-    std::cout << "Successfull\n";
-    close(server_socket_);
-    std::cout << "Disconnect to server\n";
-    return;
+    std::cout << "Exception throwed: " << e.what() << std::endl;
   }
 }
