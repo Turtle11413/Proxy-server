@@ -25,12 +25,14 @@ ProxyServer::ProxyServer(const std::string &listen_port,
 void ProxyServer::InitSocket(int &socket_) {
   // AF_INET for IPv4, SOCK_STREAM for TCP
   if ((socket_ = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    close(socket_);
     throw std::runtime_error("Socket creating error");
   }
 }
 
 void ProxyServer::BindSocket(int &socket_, const int &port) {
   struct sockaddr_in sock_addr;
+  memset(&sock_addr, 0, sizeof(sock_addr));
 
   sock_addr.sin_family = AF_INET;
   sock_addr.sin_addr.s_addr = INADDR_ANY;
@@ -45,8 +47,8 @@ void ProxyServer::BindSocket(int &socket_, const int &port) {
 
 void ProxyServer::ListenSocket(int &socket_) {
   if (listen(socket_, kMaxConnections) < 0) {
-    throw std::runtime_error("Error listen socket");
     close(socket_);
+    throw std::runtime_error("Error listen socket");
   }
 }
 
@@ -72,6 +74,7 @@ void ProxyServer::ConnectSocket(int &socket_, const std::string &host,
 
   if (connect(socket_, reinterpret_cast<sockaddr *>(&sock_addr),
               sizeof(sock_addr)) < 0) {
+    close(socket_);
     std::cerr << "Error code: " << errno << std::endl;
     std::cerr << "Error message: " << strerror(errno) << std::endl;
 
@@ -103,6 +106,7 @@ void ProxyServer::ReadConsoleInput() {
     if (input == "\\stop") {
       server_status_ = ServerStatus::STOP;
       std::cout << "Server is stopped\n";
+      exit(0);
     }
   }
 }
@@ -113,7 +117,7 @@ void ProxyServer::Run() {
 
   console_input_thread_ = std::thread(&ProxyServer::ReadConsoleInput, this);
 
-  while (server_status_ == ServerStatus::WORK) {
+  for (; server_status_ == ServerStatus::WORK;) {
     HandleClient(log_stream);
   }
 
@@ -125,11 +129,14 @@ void ProxyServer::CreateClientSocket(int &client_socket) {
 
   sockaddr_in client_addr;
   socklen_t client_addr_size = sizeof(client_addr);
+  memset(&client_addr, 0, client_addr_size);
+
   client_socket =
       accept(listen_socket_, reinterpret_cast<sockaddr *>(&client_addr),
              &client_addr_size);
 
   if (client_socket < 0) {
+    close(client_socket);
     throw std::runtime_error("Accepting client error");
   }
 
@@ -166,6 +173,7 @@ void ProxyServer::ConnectClientWithServer(int &client_socket) {
     ConnectSocket(server_socket, server_host_, server_port_);
     std::cout << "Successfull\n";
 
+    // shutdown(client_socket, SHUT_RDWR);
     close(server_socket);
     std::cout << "Disconnect to server\n";
   } catch (std::exception &e) {
