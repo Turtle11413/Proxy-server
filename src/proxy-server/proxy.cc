@@ -12,6 +12,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 ProxyServer::ProxyServer(const std::string &listen_port,
                          const std::string &server_host,
@@ -50,7 +51,7 @@ void ProxyServer::BindSocket(int &socket_, const int &port) {
 void ProxyServer::ListenSocket(int &socket_) {
   if (listen(socket_, kMaxConnections) < 0) {
     close(socket_);
-    throw std::runtime_error("Error listen socket");
+    throw std::runtime_error("Listen socket error");
   }
 }
 
@@ -87,12 +88,14 @@ void ProxyServer::ConnectSocket(int &socket_, const std::string &host,
 void ProxyServer::CreateServerSocket(int &socket_, const std::string &host,
                                      const int &port) {
   try {
+    // std::cout << "Create server socket\n";
     InitSocket(socket_);
-    std::cout << "Connecting to server: " << host << ":" << port << std::endl;
+    // std::cout << ">>>Server socket created\n";
     ConnectSocket(socket_, host, port);
-    std::cout << "Successfull\n";
+    // std::cout << ">>>Socket connected to server: " << host << ":" << port
+    // << std::endl;
   } catch (std::exception &e) {
-    // close(listen_socket_);
+    close(listen_socket_);
     close(socket_);
     std::cout << "Exception throwed : " << e.what() << std::endl;
   }
@@ -100,7 +103,7 @@ void ProxyServer::CreateServerSocket(int &socket_, const std::string &host,
 
 void ProxyServer::ReadConsoleInput() {
   while (server_status_ == ServerStatus::WORK) {
-    std::cout << "Enter \\stop to stop server\n";
+    std::cout << "\nEnter \\stop to stop server\n\n";
 
     std::string input;
     std::getline(std::cin, input);
@@ -114,21 +117,41 @@ void ProxyServer::ReadConsoleInput() {
 }
 
 void ProxyServer::Run() {
-  std::ofstream log_stream("logfile.log", std::ios::app);
+  std::ofstream logStream("logfile.log", std::ios::app);
   server_status_ = ServerStatus::WORK;
 
   console_input_thread_ = std::thread(&ProxyServer::ReadConsoleInput, this);
 
-  while (true) {
-    std::lock_guard<std::mutex> lock(server_status_mutex_);
-    if (server_status_ == ServerStatus::STOP) {
-      break;
-    }
-    HandleClient(log_stream);
+  while (server_status_ == ServerStatus::WORK) {
+    ManageClientSession(logStream);
   }
 
-  log_stream.close();
+  logStream.close();
   console_input_thread_.join();
+}
+
+void ProxyServer::ManageClientSession(std::ofstream &logStream) {
+  int client_socket = -1;
+  int server_socket = -1;
+
+  try {
+    CreateClientSocket(client_socket);
+    CreateServerSocket(server_socket, server_host_, server_port_);
+    std::cout << "New client connected\n";
+  } catch (std::exception &e) {
+    std::cout << "Exception throwed: " << e.what() << std::endl;
+  }
+
+  if (fork() == 0) {
+    close(listen_socket_);
+
+    ManageClientTraffic(client_socket, server_socket, logStream);
+
+    close(client_socket);
+    close(server_socket);
+    std::cout << "Connecting closed\n";
+    exit(0);
+  }
 }
 
 void ProxyServer::CreateClientSocket(int &client_socket) {
@@ -145,58 +168,27 @@ void ProxyServer::CreateClientSocket(int &client_socket) {
     throw std::runtime_error("Accepting client error");
   }
 
-  std::cout << "Accepted connection from " << inet_ntoa(client_addr.sin_addr)
+  std::cout << "New connection from client: " << inet_ntoa(client_addr.sin_addr)
             << ":" << ntohs(client_addr.sin_port) << std::endl;
 }
 
-void ProxyServer::HandleClient([[maybe_unused]] std::ofstream &log_stream) {
-  int client_socket = -1;
-  int server_socket = -1;
+void ProxyServer::ManageClientTraffic(int &client_socket, int &server_socket,
+                                      std::ofstream &logStream) {
 
-  try {
-    std::cout << "!!!\n";
-    std::cout << "Creating client socket\n";
-    CreateClientSocket(client_socket);
-
-    std::cout << "Creating server socket\n";
-    CreateServerSocket(server_socket, server_host_, server_port_);
-    std::cout << "Connecting to server: " << server_host_ << ":" << server_port_
-              << std::endl;
-  } catch (std::exception &e) {
-    std::cout << "Exception throwed: " << e.what() << std::endl;
-  }
-
-  std::cout << "Successfull\n";
-
-  if (fork() == 0) {
-    close(listen_socket_);
-
-    ReadClientQueries(client_socket, server_socket, log_stream);
-
-    close(client_socket);
-    close(server_socket);
-    std::cout << "Connecting closed\n";
-    exit(0);
-  }
-}
-
-void ProxyServer::ReadClientQueries(int &client_socket, int &server_socket,
-                                    std::ofstream &log_stream) {
-
-  fd_set read_fd;
+  fd_set fds;
   for (; server_status_ == ServerStatus::WORK;) {
-    FD_ZERO(&read_fd);
-    FD_SET(client_socket, &read_fd);
-    FD_SET(server_socket, &read_fd);
+    FD_ZERO(&fds);
+    FD_SET(client_socket, &fds);
+    FD_SET(server_socket, &fds);
 
-    int max_fd = std::max(client_socket, server_socket);
-    if (select(max_fd + 1, &read_fd, nullptr, nullptr, nullptr) == -1) {
+    int searched_fd = std::max(client_socket, server_socket);
+    if (select(searched_fd + 1, &fds, nullptr, nullptr, nullptr) == -1) {
       perror("Select fd error");
       break;
     }
 
     try {
-      ClientReceiving(client_socket, server_socket, read_fd, log_stream);
+      ManageClientQuery(client_socket, server_socket, fds, logStream);
     } catch (std::exception &e) {
       std::cout << "Exception throwed: " << e.what() << std::endl;
       break;
@@ -207,37 +199,40 @@ void ProxyServer::ReadClientQueries(int &client_socket, int &server_socket,
   close(server_socket);
 }
 
-void ProxyServer::ClientReceiving(int &client_socket, int &server_socket,
-                                  fd_set &read_fd, std::ofstream &log_stream) {
+void ProxyServer::ManageClientQuery(int &client_socket, int &server_socket,
+                                    fd_set &fds, std::ofstream &logStream) {
   char buffer[1000];
   memset(buffer, 0, sizeof(buffer));
 
-  if (FD_ISSET(client_socket, &read_fd)) {
-    ssize_t bytes_received = recv(client_socket, buffer, sizeof(buffer), 0);
-    if (bytes_received <= 0) {
-      std::cerr << "Receiving from client error" << std::endl;
+  if (FD_ISSET(client_socket, &fds)) {
+    ssize_t received_query = recv(client_socket, buffer, sizeof(buffer), 0);
+
+    if (received_query <= 0) {
       throw std::runtime_error("Receiving from client error");
     }
 
-    std::string client_query = ExtractClientQuery(buffer, bytes_received);
+    std::string client_query = ExtractClientQuery(buffer, received_query);
 
-    if (client_query.find("SELECT") != std::string::npos ||
-        client_query.find("INSERT") != std::string::npos ||
-        client_query.find("UPDATE") != std::string::npos ||
-        client_query.find("DELETE") != std::string::npos) {
-      std::string log_info = GetClientInfo(client_socket, client_query);
-      std::cout << log_info;
-      log_stream << log_info;
-      log_stream.flush();
+    std::vector<std::string> search_string = {"select", "insert", "update",
+                                              "delete"};
+    std::string log_info = GetClientInfo(client_socket, client_query);
+
+    for (auto keyword : search_string) {
+      if (client_query.find(keyword) != std::string::npos) {
+        std::cout << log_info;
+        logStream << log_info;
+        logStream.flush();
+        break;
+      }
     }
-    send(server_socket, buffer, static_cast<size_t>(bytes_received), 0);
+
+    send(server_socket, buffer, static_cast<size_t>(received_query), 0);
     memset(buffer, 0, sizeof(buffer));
   }
 
-  if (FD_ISSET(server_socket, &read_fd)) {
+  if (FD_ISSET(server_socket, &fds)) {
     ssize_t bytes_received = recv(server_socket, buffer, sizeof(buffer), 0);
     if (bytes_received <= 0) {
-      std::cerr << "Error receiving data from server" << std::endl;
       throw std::runtime_error("Receiving from server error");
     }
 
@@ -264,12 +259,12 @@ std::string ProxyServer::ExtractClientQuery(char buffer[],
                  std::back_inserter(lower_query),
                  [](unsigned char c) { return std::tolower(c); });
 
-  // if (client_query.find("Q(") == 0)
-  //   client_query.erase(0, 2);
-  // if (client_query.find("Q") == 0)
-  //   client_query.erase(0, 1);
-  // if (client_query.find("SELECT") == 1)
-  //   client_query.erase(0, 6);
+  if (client_query.find("q(") == 0)
+    client_query.erase(0, 2);
+  if (client_query.find("q") == 0)
+    client_query.erase(0, 1);
+  if (client_query.find("select") == 1)
+    client_query.erase(0, 6);
 
   return lower_query;
 }
@@ -289,10 +284,10 @@ std::string ProxyServer::GetClientInfo(const int &client_socket,
       std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
   std::ostringstream output;
-  output << "Received from client: " << client_ip << ":"
+  output << "\nReceived from client: " << client_ip << ":"
          << ntohs(client_addr.sin_port)
-         << "\nReceived time: " << std::ctime(&now) << "\nClient's query:\n"
-         << client_query << std::endl;
+         << "\nReceived time: " << std::ctime(&now) << "Client's query:\n"
+         << client_query << "\n\n";
 
   return output.str();
 }
