@@ -5,15 +5,16 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <future>
 #include <string>
 #include <thread>
 
-#define kMaxConnections 100
+#define MaxConnections 100
 
 class ProxyServer {
 public:
-  ProxyServer(const std::string &listen_port, const std::string &server_host,
-              const std::string &server_port);
+  ProxyServer(const std::string &server_host, const std::string &server_port,
+              const std::string &listen_port);
 
   ~ProxyServer() {
     close(listen_socket_);
@@ -21,6 +22,7 @@ public:
   }
 
   void Run();
+  void ReadConsoleInput();
 
 private:
   void InitSocket(int &socket_);
@@ -32,8 +34,6 @@ private:
   void CreateServerSocket(int &socket_, const std::string &server_host,
                           const int &server_port);
 
-  void ReadConsoleInput();
-
   void CreateClientSocket(int &client_socket);
   void ManageClientSession(std::ofstream &log_stream);
   void ManageClientTraffic(int &client_socket, int &server_socket,
@@ -44,7 +44,7 @@ private:
   std::string GetClientInfo(const int &client_socket,
                             const std::string &client_query);
 
-  std::thread console_input_thread_;
+  std::future<void> stop_server_;
 
   int listen_port_;
   int listen_socket_;

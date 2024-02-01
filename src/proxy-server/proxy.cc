@@ -14,12 +14,12 @@
 #include <string>
 #include <vector>
 
-ProxyServer::ProxyServer(const std::string &listen_port,
-                         const std::string &server_host,
-                         const std::string &server_port) {
-  listen_port_ = std::stoi(listen_port);
+ProxyServer::ProxyServer(const std::string &server_host,
+                         const std::string &server_port,
+                         const std::string &listen_port) {
   server_host_ = server_host;
   server_port_ = std::stoi(server_port);
+  listen_port_ = std::stoi(listen_port);
 
   CreateListenSocket(listen_socket_, listen_port_);
   CreateServerSocket(server_socket_, server_host_, server_port_);
@@ -49,7 +49,7 @@ void ProxyServer::BindSocket(int &socket_, const int &port) {
 }
 
 void ProxyServer::ListenSocket(int &socket_) {
-  if (listen(socket_, kMaxConnections) < 0) {
+  if (listen(socket_, MaxConnections) < 0) {
     close(socket_);
     throw std::runtime_error("Listen socket error");
   }
@@ -78,8 +78,6 @@ void ProxyServer::ConnectSocket(int &socket_, const std::string &host,
   if (connect(socket_, reinterpret_cast<sockaddr *>(&sock_addr),
               sizeof(sock_addr)) < 0) {
     close(socket_);
-    std::cerr << "Error code: " << errno << std::endl;
-    std::cerr << "Error message: " << strerror(errno) << std::endl;
 
     throw std::runtime_error("Connecting error: server socket\n");
   }
@@ -88,46 +86,38 @@ void ProxyServer::ConnectSocket(int &socket_, const std::string &host,
 void ProxyServer::CreateServerSocket(int &socket_, const std::string &host,
                                      const int &port) {
   try {
-    // std::cout << "Create server socket\n";
     InitSocket(socket_);
-    // std::cout << ">>>Server socket created\n";
     ConnectSocket(socket_, host, port);
-    // std::cout << ">>>Socket connected to server: " << host << ":" << port
-    // << std::endl;
   } catch (std::exception &e) {
-    close(listen_socket_);
     close(socket_);
     std::cout << "Exception throwed : " << e.what() << std::endl;
   }
 }
 
 void ProxyServer::ReadConsoleInput() {
-  while (server_status_ == ServerStatus::WORK) {
-    std::cout << "\nEnter \\stop to stop server\n\n";
 
+  stop_server_ = std::async(std::launch::async, [this]() {
     std::string input;
-    std::getline(std::cin, input);
 
-    if (input == "\\stop") {
-      server_status_ = ServerStatus::STOP;
-      std::cout << "Server is stopped\n";
-      exit(0);
+    while (input != "\\stop") {
+      std::cout << "\t>>>Enter \\stop to stop server\n";
+      std::cin >> input;
     }
-  }
+
+    server_status_ = ServerStatus::STOP;
+    std::cout << "Server is stopping\n";
+  });
 }
 
 void ProxyServer::Run() {
   std::ofstream logStream("logfile.log", std::ios::app);
   server_status_ = ServerStatus::WORK;
 
-  console_input_thread_ = std::thread(&ProxyServer::ReadConsoleInput, this);
-
   while (server_status_ == ServerStatus::WORK) {
     ManageClientSession(logStream);
   }
 
   logStream.close();
-  console_input_thread_.join();
 }
 
 void ProxyServer::ManageClientSession(std::ofstream &logStream) {
@@ -194,9 +184,6 @@ void ProxyServer::ManageClientTraffic(int &client_socket, int &server_socket,
       break;
     }
   }
-
-  close(client_socket);
-  close(server_socket);
 }
 
 void ProxyServer::ManageClientQuery(int &client_socket, int &server_socket,
@@ -213,11 +200,11 @@ void ProxyServer::ManageClientQuery(int &client_socket, int &server_socket,
 
     std::string client_query = ExtractClientQuery(buffer, received_query);
 
-    std::vector<std::string> search_string = {"select", "insert", "update",
-                                              "delete"};
+    std::vector<std::string> search_strings = {"select", "insert", "update",
+                                               "delete"};
     std::string log_info = GetClientInfo(client_socket, client_query);
 
-    for (auto keyword : search_string) {
+    for (auto keyword : search_strings) {
       if (client_query.find(keyword) != std::string::npos) {
         std::cout << log_info;
         logStream << log_info;
@@ -259,12 +246,10 @@ std::string ProxyServer::ExtractClientQuery(char buffer[],
                  std::back_inserter(lower_query),
                  [](unsigned char c) { return std::tolower(c); });
 
-  if (client_query.find("q(") == 0)
-    client_query.erase(0, 2);
-  if (client_query.find("q") == 0)
-    client_query.erase(0, 1);
-  if (client_query.find("select") == 1)
-    client_query.erase(0, 6);
+  if (lower_query.find("q(") == 0)
+    lower_query.erase(0, 2);
+  if (lower_query.find("q") == 0)
+    lower_query.erase(0, 1);
 
   return lower_query;
 }
